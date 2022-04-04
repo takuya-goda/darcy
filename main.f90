@@ -48,11 +48,14 @@ program fortran
     integer :: i, j, time, nt, outputstep
     integer :: ic, jc
     real(real64) :: x, y
+    real(real64) :: coord_x, coord_y
 
 
     ! ========== 物理量 ==========
     real(real64), dimension(0:nxd + 1, 0:nyc + 1) :: u
     real(real64), dimension(0:nxc + 1, 0:nyd + 1) :: v
+    real(real64), dimension(0:nxd + 1, 0:nyc + 1) :: uold
+    real(real64), dimension(0:nxc + 1, 0:nyd + 1) :: vold
     real(real64), dimension(0:nxd + 1, 0:nyc + 1) :: u_aux
     real(real64), dimension(0:nxc + 1, 0:nyd + 1) :: v_aux
     real(real64), dimension(0:nxc + 1, 0:nyc + 1) :: p
@@ -64,6 +67,8 @@ program fortran
     real(real64), dimension(0:nxc + 1, 0:nyd + 1) :: vof_flux_y
     real(real64), dimension(nxc, nyc) :: theta
     real(real64), dimension(0:nxc + 1, 0:nyc + 1) :: force
+
+    real(real64), dimension(nxc, nyc) :: coordinate
 
     ! ========== 円柱解析 ==========
     real(8), parameter :: center(2) = [lx*0.5d0,ly*0.5d0]
@@ -106,6 +111,8 @@ program fortran
     theta(:, :) = 0d0
     eps(:, :)   = 0d0
     eps(ic_porous_start:ic_porous_end,:) = epsilon
+    coordinate(:, :)   = 0d0
+    coord_x = 0d0 ; coord_y = 0.24d0
 
     ! 外力
     force(:,:)   = 0d0
@@ -140,24 +147,25 @@ program fortran
     ! close(30)
 
 ! メインルーチン
-    call output(u, v, p, phi, 0, theta, vof)
+    call output(u, v, p, phi, 0, theta, vof, coordinate)
     call cpu_time(start_time)
     print *, "Reynolds number = ",Re
     print *, "Darcy    number = ",Da
     print *, "couran   number = ",uin*dt/dx
     ! do time = 1, nt
-    do time = 1, 100
+    do time = 1, 10000
         print *, time,"/",nt,dt*time
         ! print *, vof_flux_x(1,10),vof_flux_x(2,10),vof_flux_x(3,10)
         call computeAuxiallyVelocity(u_aux, v_aux, u, v, p, dx, dy, dt, uin, vof, force, eps, aprt)
         call computeDivergenceAuxiallyVelocity(theta, u_aux, v_aux, dx, dy, dt)
         call computePressurePoisson(p, phi, dp, u, v, dx, dy, theta, err_total, arufa, dens, dt, aprt)
-        call computeVelocity(u, v, u_aux, v_aux, dt, dx, dy, dens, phi, uin, vof, aprt)
+        call computeVelocity(u, v, uold, vold, u_aux, v_aux, dt, dx, dy, dens, phi, uin, vof, aprt)
         call integrate_vof(vof, vof_flux_x, vof_flux_y, u, v, aprt)
+        call integrate_coordinate(coordinate, coord_x, coord_y, u, v, uold, vold)
         if (mod(time, outputstep) == 0) then
-            call output(u, v, p, phi, time, theta, vof)
-        elseif (mod(time, 100) == 0 .and. time < 1000) then
-            call output(u, v, p, phi, time, theta, vof)
+            call output(u, v, p, phi, time, theta, vof, coordinate)
+        elseif (mod(time, 100) == 0 .and. time < 300) then
+            call output(u, v, p, phi, time, theta, vof, coordinate)
         end if
     end do
     call cpu_time(end_time)
@@ -169,7 +177,7 @@ program fortran
 
 contains
 
-    subroutine output(u, v, p, phi, time, theta, vof)
+    subroutine output(u, v, p, phi, time, theta, vof, coordinate)
         use, intrinsic :: iso_fortran_env
         implicit none
         real(real64), intent(in) :: u(0:, 0:)
@@ -179,6 +187,7 @@ contains
         integer, intent(in) :: time
         real(real64), intent(in) :: theta(:, :)
         real(real64), intent(in) :: vof(0:, 0:)
+        real(real64), intent(in) :: coordinate(:,:)
 
         integer :: i, j
         real(real64) :: uout, vout
@@ -186,23 +195,20 @@ contains
 
         write (filename1, '("pres/pres",i6.6,".txt")') time
         write (filename2, '("vof/vof",i6.6,".txt")') time
-        ! write (filename3, '("theta/theta",i5.5,".txt")') time
+        write (filename3, '("crd/coord",i5.5,".txt")') time
         open (unit=10, file=filename1)
         open (unit=20, file=filename2)
-        ! open (unit=30, file=filename3)
+        open (unit=30, file=filename3)
         do j = 1, nyc
         do i = 1, nxc
-            uout = (u(i, j) + u(i + 1, j))/2d0*vof(i,j)
-            vout = (v(i, j) + v(i, j + 1))/2d0*vof(i,j)
-            write (10, '(2i8,3f23.14)') i, j, p(i, j), uout, vout
-            ! write (20, '(2i8,3f23.14)') i, j, vof(i, j), uout, vout
+            write (10, '(2i8,3f23.14)') i, j, p(i, j), u(i,j),v(i,j)
             write (20, '(2i8,3f23.14)') i, j, vof(i, j), u(i,j),v(i,j)
-            ! write (30, '(2i8,3f23.14)') i, j, theta(i, j), uout, vout
+            write (30, '(2i8,3f23.14)') i, j, coordinate(i, j), u(i,j),v(i,j)
         end do
         end do
         close (10)
         close (20)
-        ! close (30)
+        close (30)
 
     end subroutine
 
@@ -409,9 +415,6 @@ contains
                          - dt*eps(ic,jc)*abs(u(i,jc))*u(i,jc)/sqrt(Da)
             test2 = - dt/(Re*Da)*eps(ic,jc)*u(i,jc)
             test3 = - dt*eps(ic,jc)*abs(u(i,jc))*u(i,jc)/sqrt(Da)
-            if(i==27.and.j==1)then
-                print *, test2,test3
-            endif
         end do
         end do
 
@@ -525,11 +528,13 @@ contains
 
     end subroutine
 
-    subroutine computeVelocity(u, v, u_aux, v_aux, dt, dx, dy, dens, phi, uin, vof, aprt)
+    subroutine computeVelocity(u, v, uold, vold, u_aux, v_aux, dt, dx, dy, dens, phi, uin, vof, aprt)
         use, intrinsic :: iso_fortran_env
         implicit none
         real(real64), intent(inout) :: u(0:, 0:)
         real(real64), intent(inout) :: v(0:, 0:)
+        real(real64), intent(inout) :: uold(0:, 0:)
+        real(real64), intent(inout) :: vold(0:, 0:)
         real(real64), intent(inout) :: phi(0:, 0:)
         real(real64), intent(in) :: u_aux(0:, 0:)
         real(real64), intent(in) :: v_aux(0:, 0:)
@@ -539,6 +544,8 @@ contains
         real(real64), intent(in) :: dt, dx, dy, dens, uin
         real(real64)::H_f
 
+        uold(:,:) = u(:,:)
+        vold(:,:) = v(:,:)
         do jc = 1, nyc
         do i = 1, nxd
             j = jc
@@ -626,6 +633,48 @@ contains
         enddo
 
         vof(1,:) = 1d0
+
+    end subroutine
+
+    subroutine integrate_coordinate(coordinate,coord_x,coord_y,u,v,uold,vold)
+        use,intrinsic::iso_fortran_env
+        implicit none
+        real(real64),intent(inout) :: coordinate(:,:)
+        real(real64),intent(inout) :: coord_x,coord_y
+        real(real64),intent(in)::u(0:,0:)
+        real(real64),intent(in)::v(0:,0:)
+        real(real64),intent(in)::uold(0:,0:)
+        real(real64),intent(in)::vold(0:,0:)
+        real(real64)::coord_xold,coord_yold
+        integer::coord_i,coord_j
+
+        coord_xold = coord_x
+        coord_yold = coord_y
+
+        ! coord（座標）
+        coordination: block
+            real(8)::r,x,y
+            real(8)::min_val
+            integer::i,j
+            min_val = 100d0
+            do j=1,nyc
+            do i=1,nxc
+                x = dble(i-1)*dx - coord_x
+                y = dble(j-1)*dy - coord_y
+                coordinate(i,j) = sqrt(x**2 + y**2)
+                if(min_val > coordinate(i,j)) then
+                    min_val = coordinate(i,j)
+                    coord_i = i
+                    coord_j = j
+                endif
+                if(coordinate(i,j) > 0.02d0) coordinate(i,j) = 1d0
+            enddo
+            enddo
+        end block coordination
+
+        ! 座標更新
+        coord_x = coord_xold + u(coord_i,coord_j)*dt + 0.5d0*(u(coord_i,coord_j) - uold(coord_i,coord_j))/dt*dt**2
+        coord_y = coord_yold + v(coord_i,coord_j)*dt + 0.5d0*(v(coord_i,coord_j) - vold(coord_i,coord_j))/dt*dt**2
 
     end subroutine
 
